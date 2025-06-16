@@ -1,0 +1,29 @@
+[Unit]
+Description=Haltdos - Reverse proxy, configurable at runtime, fast and safe, built in Rust.
+Documentation=https://docs.haltdos.com/
+After=network-online.target local-fs.target remote-fs.target time-sync.target
+Wants=network-online.target local-fs.target remote-fs.target time-sync.target
+
+StartLimitIntervalSec=10
+StartLimitBurst=5
+
+[Service]
+Type=simple
+
+RuntimeDirectory=rproxy-%i
+PIDFile=/run/rproxy/rproxy-%i.pid
+
+ExecStartPre=/opt/haltdos/rproxy/sbin/rproxy config check --config /var/haltdos/rproxy/config_%i.toml
+ExecStart=/opt/haltdos/rproxy/sbin/rproxy start --config /var/haltdos/rproxy/config_%i.toml
+ExecReload=/opt/haltdos/rproxy/sbin/rproxy reload --config /var/haltdos/rproxy/config_%i.toml
+Restart=on-failure
+
+LimitNOFILE=65536
+
+# Since systemd 229, should be in [Unit] but in order to support systemd <229,
+# it is also supported to have it here.
+StartLimitInterval=10
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target
