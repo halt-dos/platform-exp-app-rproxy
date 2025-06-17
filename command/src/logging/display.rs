@@ -130,6 +130,9 @@ impl fmt::Display for EndpointRecord<'_> {
             ),
             Self::Tcp => {
                 write!(f, "-")
+            },
+            Self::Udp => {
+                write!(f, "-")
             }
         }
     }

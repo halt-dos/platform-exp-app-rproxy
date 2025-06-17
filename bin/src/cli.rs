@@ -357,6 +357,11 @@ pub enum FrontendCmd {
         #[clap(subcommand)]
         cmd: TcpFrontendCmd,
     },
+    #[clap(name = "udp", about = "UDP frontend management")]
+    Udp {
+        #[clap(subcommand)]
+        cmd: UdpFrontendCmd,
+    },
     #[clap(name = "list", about = "List frontends using filters")]
     List {
         #[clap(long = "http", help = "filter for http frontends")]
@@ -365,6 +370,8 @@ pub enum FrontendCmd {
         https: bool,
         #[clap(long = "tcp", help = "filter for tcp frontends")]
         tcp: bool,
+        #[clap(long = "udp", help = "filter for udp frontends")]
+        udp: bool,
         #[clap(
             short = 'd',
             long = "domain",
@@ -496,6 +503,46 @@ pub enum TcpFrontendCmd {
 }
 
 #[derive(Subcommand, PartialEq, Eq, Clone, Debug)]
+pub enum UdpFrontendCmd {
+    #[clap(name = "add")]
+    Add {
+        #[clap(
+            short = 'i',
+            long = "id",
+            help = "the id of the cluster to which the frontend belongs"
+        )]
+        id: String,
+        #[clap(
+            short = 'a',
+            long = "address",
+            help = "frontend address, format: IP:port"
+        )]
+        address: SocketAddr,
+        #[clap(
+            long = "tags",
+            help = "Specify tag (key-value pair) to apply on front-end (example: 'key=value, other-key=other-value')",
+            value_parser = parse_tags
+        )]
+        tags: Option<BTreeMap<String, String>>,
+    },
+    #[clap(name = "remove")]
+    Remove {
+        #[clap(
+            short = 'i',
+            long = "id",
+            help = "the id of the cluster to which the frontend belongs"
+        )]
+        id: String,
+        #[clap(
+            short = 'a',
+            long = "address",
+            help = "frontend address, format: IP:port"
+        )]
+        address: SocketAddr,
+    },
+}
+
+#[derive(Subcommand, PartialEq, Eq, Clone, Debug)]
 pub enum ListenerCmd {
     #[clap(name = "http", about = "HTTP listener management")]
     Http {
@@ -511,6 +558,11 @@ pub enum ListenerCmd {
     Tcp {
         #[clap(subcommand)]
         cmd: TcpListenerCmd,
+    },
+    #[clap(name = "udp", about = "UDP listener management")]
+    Udp {
+        #[clap(subcommand)]
+        cmd: UdpListenerCmd,
     },
     #[clap(name = "list", about = "List all listeners")]
     List,
@@ -681,6 +733,56 @@ pub enum HttpsListenerCmd {
 
 #[derive(Subcommand, PartialEq, Eq, Clone, Debug)]
 pub enum TcpListenerCmd {
+    #[clap(name = "add")]
+    Add {
+        #[clap(
+            short = 'a',
+            long = "address",
+            help = "listener address, format: IP:port"
+        )]
+        address: SocketAddr,
+        #[clap(
+            long = "public-address",
+            help = "a different IP than the one the socket sees, for logs and forwarded headers"
+        )]
+        public_address: Option<SocketAddr>,
+        #[clap(
+            long = "expect-proxy",
+            help = "Configures the client socket to receive a PROXY protocol header"
+        )]
+        expect_proxy: bool,
+    },
+    #[clap(name = "remove")]
+    Remove {
+        #[clap(
+            short = 'a',
+            long = "address",
+            help = "listener address, format: IP:port"
+        )]
+        address: SocketAddr,
+    },
+    #[clap(name = "activate")]
+    Activate {
+        #[clap(
+            short = 'a',
+            long = "address",
+            help = "listener address, format: IP:port"
+        )]
+        address: SocketAddr,
+    },
+    #[clap(name = "deactivate")]
+    Deactivate {
+        #[clap(
+            short = 'a',
+            long = "address",
+            help = "listener address, format: IP:port"
+        )]
+        address: SocketAddr,
+    },
+}
+
+#[derive(Subcommand, PartialEq, Eq, Clone, Debug)]
+pub enum UdpListenerCmd {
     #[clap(name = "add")]
     Add {
         #[clap(

@@ -16,7 +16,7 @@ use sozu_command::{
     logging::setup_default_logging,
     proto::command::{
         request::RequestType, AddBackend, Cluster, HardStop, LoadBalancingParams, PathRule,
-        Request, RequestHttpFrontend, RequestTcpFrontend, ReturnListenSockets, RulePosition,
+        Request, RequestHttpFrontend, RequestTcpFrontend, RequestUdpFrontend, ReturnListenSockets, RulePosition,
         ServerConfig, SoftStop, WorkerRequest, WorkerResponse,
     },
     scm_socket::{Listeners, ScmSocket},
@@ -273,6 +273,17 @@ impl Worker {
         address: SocketAddr,
     ) -> RequestTcpFrontend {
         RequestTcpFrontend {
+            cluster_id: cluster_id.into(),
+            address: address.into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn default_udp_frontend<S: Into<String>>(
+        cluster_id: S,
+        address: SocketAddr,
+    ) -> RequestUdpFrontend {
+        RequestUdpFrontend {
             cluster_id: cluster_id.into(),
             address: address.into(),
             ..Default::default()

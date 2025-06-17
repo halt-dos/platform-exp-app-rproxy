@@ -91,6 +91,7 @@ impl ScmSocket {
             http: listeners.http.iter().map(|t| t.0.to_string()).collect(),
             tls: listeners.tls.iter().map(|t| t.0.to_string()).collect(),
             tcp: listeners.tcp.iter().map(|t| t.0.to_string()).collect(),
+            udp: listeners.udp.iter().map(|t| t.0.to_string()).collect(),
         };
 
         let message = listeners_count.encode_length_delimited_to_vec();
@@ -121,6 +122,7 @@ impl ScmSocket {
         let mut http_addresses = parse_addresses(&listeners_count.http)?;
         let mut tls_addresses = parse_addresses(&listeners_count.tls)?;
         let mut tcp_addresses = parse_addresses(&listeners_count.tcp)?;
+        let mut udp_addresses = parse_addresses(&listeners_count.udp)?;
 
         let mut index = 0;
         let len = listeners_count.http.len();
@@ -148,7 +150,14 @@ impl ScmSocket {
                 .zip(received_fds[index..file_descriptor_length].iter().cloned()),
         );
 
-        Ok(Listeners { http, tls, tcp })
+        let mut udp = Vec::new();
+        udp.extend(
+            udp_addresses
+                .drain(..)
+                .zip(received_fds[index..file_descriptor_length].iter().cloned()),
+        );
+
+        Ok(Listeners { http, tls, tcp, udp })
     }
 
     /// Sends message and file descriptors separately. The file descriptors are summed up
@@ -219,6 +228,7 @@ pub struct Listeners {
     pub http: Vec<(SocketAddr, RawFd)>,
     pub tls: Vec<(SocketAddr, RawFd)>,
     pub tcp: Vec<(SocketAddr, RawFd)>,
+    pub udp: Vec<(SocketAddr, RawFd)>,
 }
 
 impl Listeners {
@@ -241,6 +251,13 @@ impl Listeners {
             .iter()
             .position(|(front, _)| front == addr)
             .map(|pos| self.tcp.remove(pos).1)
+    }
+
+    pub fn get_udp(&mut self, addr: &SocketAddr) -> Option<RawFd> {
+        self.udp
+            .iter()
+            .position(|(front, _)| front == addr)
+            .map(|pos| self.udp.remove(pos).1)
     }
 
     /// Deactivate all listeners by closing their file descriptors
@@ -352,6 +369,8 @@ mod tests {
             MioUnixStream::pair().expect("Could not create a pair of mio unix streams");
         let (tls_socket1, tls_socket2) =
             MioUnixStream::pair().expect("Could not create a pair of mio unix streams");
+        let (udp_socket1, udp_socket2) =
+            MioUnixStream::pair().expect("Could not create a pair of mio unix streams");
 
         let listeners = Listeners {
             http: vec![
@@ -382,6 +401,16 @@ mod tests {
                 (
                     socket_addr_from_str("127.0.3.2:8443"),
                     tls_socket2.as_raw_fd(),
+                ),
+            ],
+            udp: vec![
+                (
+                    socket_addr_from_str("127.0.2.1:8080"),
+                    udp_socket1.as_raw_fd(),
+                ),
+                (
+                    socket_addr_from_str("127.0.2.2:8080"),
+                    udp_socket2.as_raw_fd(),
                 ),
             ],
         };

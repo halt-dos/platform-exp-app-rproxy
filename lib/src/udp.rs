@@ -9,7 +9,7 @@ use std::{
 };
 
 use mio::{
-    net::TcpListener as MioTcpListener, net::TcpStream as MioTcpStream, unix::SourceFd, Interest,
+    net::UdpSocket as MioUdpListener, net::TcpStream as MioUdpStream, unix::SourceFd, Interest,
     Registry, Token,
 };
 use rusty_ulid::Ulid;
@@ -36,7 +36,7 @@ use crate::{
     socket::{server_bind, stats::socket_rtt},
     sozu_command::{
         proto::command::{
-            Event, EventKind, ProxyProtocolConfig, RequestTcpFrontend, TcpListenerConfig,
+            Event, EventKind, ProxyProtocolConfig, RequestUdpFrontend, UdpListenerConfig,
             WorkerRequest, WorkerResponse,
         },
         ready::Ready,
@@ -49,15 +49,15 @@ use crate::{
 };
 
 StateMachineBuilder! {
-    /// The various Stages of a TCP connection:
+    /// The various Stages of a UDP session:
     ///
     /// 1. optional (ExpectProxyProtocol | SendProxyProtocol | RelayProxyProtocol)
     /// 2. Pipe
-    enum TcpStateMachine {
-        Pipe(Pipe<MioTcpStream, TcpListener>),
-        SendProxyProtocol(SendProxyProtocol<MioTcpStream>),
-        RelayProxyProtocol(RelayProxyProtocol<MioTcpStream>),
-        ExpectProxyProtocol(ExpectProxyProtocol<MioTcpStream>),
+    enum UdpStateMachine {
+        Pipe(Pipe<MioUdpStream, UdpListener>),
+        SendProxyProtocol(SendProxyProtocol<MioUdpStream>),
+        RelayProxyProtocol(RelayProxyProtocol<MioUdpStream>),
+        ExpectProxyProtocol(ExpectProxyProtocol<MioUdpStream>),
     }
 }
 
@@ -66,7 +66,7 @@ StateMachineBuilder! {
 macro_rules! log_context {
     ($self:expr) => {
         format!(
-            "TCP\t{}\tSession(frontend={}, backend={})\t >>>",
+            "UDP\t{}\tSession(frontend={}, backend={})\t >>>",
             $self.log_context(),
             $self.frontend_token.0,
             $self
@@ -77,7 +77,7 @@ macro_rules! log_context {
     };
 }
 
-pub struct TcpSession {
+pub struct UdpSession {
     backend_buffer: Option<Checkout>,
     backend_connected: BackendConnectionStatus,
     backend_id: Option<String>,
@@ -93,14 +93,14 @@ pub struct TcpSession {
     frontend_token: Token,
     has_been_closed: SessionIsToBeClosed,
     last_event: Instant,
-    listener: Rc<RefCell<TcpListener>>,
+    listener: Rc<RefCell<UdpListener>>,
     metrics: SessionMetrics,
-    proxy: Rc<RefCell<TcpProxy>>,
+    proxy: Rc<RefCell<UdpProxy>>,
     request_id: Ulid,
-    state: TcpStateMachine,
+    state: UdpStateMachine,
 }
 
-impl TcpSession {
+impl UdpSession {
     #[allow(clippy::too_many_arguments)]
     fn new(
         backend_buffer: Checkout,
@@ -111,12 +111,12 @@ impl TcpSession {
         configured_frontend_timeout: Duration,
         frontend_buffer: Checkout,
         frontend_token: Token,
-        listener: Rc<RefCell<TcpListener>>,
+        listener: Rc<RefCell<UdpListener>>,
         proxy_protocol: Option<ProxyProtocolConfig>,
-        proxy: Rc<RefCell<TcpProxy>>,
-        socket: MioTcpStream,
+        proxy: Rc<RefCell<UdpProxy>>,
+        socket: MioUdpStream,
         wait_time: Duration,
-    ) -> TcpSession {
+    ) -> UdpSession {
         let frontend_address = socket.peer_addr().ok();
         let mut frontend_buffer_session = None;
         let mut backend_buffer_session = None;
@@ -131,7 +131,7 @@ impl TcpSession {
             Some(ProxyProtocolConfig::RelayHeader) => {
                 backend_buffer_session = Some(backend_buffer);
                 gauge_add!("protocol.proxy.relay", 1);
-                TcpStateMachine::RelayProxyProtocol(RelayProxyProtocol::new(
+                UdpStateMachine::RelayProxyProtocol(RelayProxyProtocol::new(
                     socket,
                     frontend_token,
                     request_id,
@@ -143,7 +143,7 @@ impl TcpSession {
                 frontend_buffer_session = Some(frontend_buffer);
                 backend_buffer_session = Some(backend_buffer);
                 gauge_add!("protocol.proxy.expect", 1);
-                TcpStateMachine::ExpectProxyProtocol(ExpectProxyProtocol::new(
+                UdpStateMachine::ExpectProxyProtocol(ExpectProxyProtocol::new(
                     container_frontend_timeout.clone(),
                     socket,
                     frontend_token,
@@ -154,7 +154,7 @@ impl TcpSession {
                 frontend_buffer_session = Some(frontend_buffer);
                 backend_buffer_session = Some(backend_buffer);
                 gauge_add!("protocol.proxy.send", 1);
-                TcpStateMachine::SendProxyProtocol(SendProxyProtocol::new(
+                UdpStateMachine::SendProxyProtocol(SendProxyProtocol::new(
                     socket,
                     frontend_token,
                     request_id,
@@ -162,7 +162,7 @@ impl TcpSession {
                 ))
             }
             None => {
-                gauge_add!("protocol.tcp", 1);
+                gauge_add!("protocol.udp", 1);
                 let mut pipe = Pipe::new(
                     backend_buffer,
                     backend_id.clone(),
@@ -175,20 +175,20 @@ impl TcpSession {
                     frontend_token,
                     socket,
                     listener.clone(),
-                    Protocol::TCP,
+                    Protocol::UDP,
                     request_id,
                     frontend_address,
-                    WebSocketContext::Tcp,
+                    WebSocketContext::Udp,
                 );
                 pipe.set_cluster_id(cluster_id.clone());
-                TcpStateMachine::Pipe(pipe)
+                UdpStateMachine::Pipe(pipe)
             }
         };
 
         let metrics = SessionMetrics::new(Some(wait_time));
         //FIXME: timeout usage
 
-        TcpSession {
+        UdpSession {
             backend_buffer: backend_buffer_session,
             backend_connected: BackendConnectionStatus::NotConnected,
             backend_id,
@@ -222,8 +222,8 @@ impl TcpSession {
             context,
             session_address: self.frontend_address,
             backend_address: None,
-            protocol: "TCP",
-            endpoint: EndpointRecord::Tcp,
+            protocol: "UDP",
+            endpoint: EndpointRecord::Udp,
             tags: listener.get_tags(&listener.get_addr().to_string()),
             client_rtt: socket_rtt(self.state.front_socket()),
             server_rtt: None,
@@ -238,7 +238,7 @@ impl TcpSession {
 
     fn front_hup(&mut self) -> SessionResult {
         match &mut self.state {
-            TcpStateMachine::Pipe(pipe) => pipe.frontend_hup(&mut self.metrics),
+            UdpStateMachine::Pipe(pipe) => pipe.frontend_hup(&mut self.metrics),
             _ => {
                 self.log_request();
                 SessionResult::Close
@@ -248,7 +248,7 @@ impl TcpSession {
 
     fn back_hup(&mut self) -> SessionResult {
         match &mut self.state {
-            TcpStateMachine::Pipe(pipe) => pipe.backend_hup(&mut self.metrics),
+            UdpStateMachine::Pipe(pipe) => pipe.backend_hup(&mut self.metrics),
             _ => {
                 self.log_request();
                 SessionResult::Close
@@ -280,17 +280,17 @@ impl TcpSession {
             );
         }
         match &mut self.state {
-            TcpStateMachine::Pipe(pipe) => pipe.readable(&mut self.metrics),
-            TcpStateMachine::RelayProxyProtocol(pp) => pp.readable(&mut self.metrics),
-            TcpStateMachine::ExpectProxyProtocol(pp) => pp.readable(&mut self.metrics),
-            TcpStateMachine::SendProxyProtocol(_) => SessionResult::Continue,
-            TcpStateMachine::FailedUpgrade(_) => unreachable!(),
+            UdpStateMachine::Pipe(pipe) => pipe.readable(&mut self.metrics),
+            UdpStateMachine::RelayProxyProtocol(pp) => pp.readable(&mut self.metrics),
+            UdpStateMachine::ExpectProxyProtocol(pp) => pp.readable(&mut self.metrics),
+            UdpStateMachine::SendProxyProtocol(_) => SessionResult::Continue,
+            UdpStateMachine::FailedUpgrade(_) => unreachable!(),
         }
     }
 
     fn writable(&mut self) -> SessionResult {
         match &mut self.state {
-            TcpStateMachine::Pipe(pipe) => pipe.writable(&mut self.metrics),
+            UdpStateMachine::Pipe(pipe) => pipe.writable(&mut self.metrics),
             _ => SessionResult::Continue,
         }
     }
@@ -310,40 +310,40 @@ impl TcpSession {
         }
 
         match &mut self.state {
-            TcpStateMachine::Pipe(pipe) => pipe.backend_readable(&mut self.metrics),
+            UdpStateMachine::Pipe(pipe) => pipe.backend_readable(&mut self.metrics),
             _ => SessionResult::Continue,
         }
     }
 
     fn back_writable(&mut self) -> SessionResult {
         match &mut self.state {
-            TcpStateMachine::Pipe(pipe) => pipe.backend_writable(&mut self.metrics),
-            TcpStateMachine::RelayProxyProtocol(pp) => pp.back_writable(&mut self.metrics),
-            TcpStateMachine::SendProxyProtocol(pp) => pp.back_writable(&mut self.metrics),
-            TcpStateMachine::ExpectProxyProtocol(_) => SessionResult::Continue,
-            TcpStateMachine::FailedUpgrade(_) => {
+            UdpStateMachine::Pipe(pipe) => pipe.backend_writable(&mut self.metrics),
+            UdpStateMachine::RelayProxyProtocol(pp) => pp.back_writable(&mut self.metrics),
+            UdpStateMachine::SendProxyProtocol(pp) => pp.back_writable(&mut self.metrics),
+            UdpStateMachine::ExpectProxyProtocol(_) => SessionResult::Continue,
+            UdpStateMachine::FailedUpgrade(_) => {
                 unreachable!()
             }
         }
     }
 
-    fn back_socket_mut(&mut self) -> Option<&mut MioTcpStream> {
+    fn back_socket_mut(&mut self) -> Option<&mut MioUdpStream> {
         match &mut self.state {
-            TcpStateMachine::Pipe(pipe) => pipe.back_socket_mut(),
-            TcpStateMachine::SendProxyProtocol(pp) => pp.back_socket_mut(),
-            TcpStateMachine::RelayProxyProtocol(pp) => pp.back_socket_mut(),
-            TcpStateMachine::ExpectProxyProtocol(_) => None,
-            TcpStateMachine::FailedUpgrade(_) => unreachable!(),
+            UdpStateMachine::Pipe(pipe) => pipe.back_socket_mut(),
+            UdpStateMachine::SendProxyProtocol(pp) => pp.back_socket_mut(),
+            UdpStateMachine::RelayProxyProtocol(pp) => pp.back_socket_mut(),
+            UdpStateMachine::ExpectProxyProtocol(_) => None,
+            UdpStateMachine::FailedUpgrade(_) => unreachable!(),
         }
     }
 
     pub fn upgrade(&mut self) -> SessionIsToBeClosed {
         let new_state = match self.state.take() {
-            TcpStateMachine::SendProxyProtocol(spp) => self.upgrade_send(spp),
-            TcpStateMachine::RelayProxyProtocol(rpp) => self.upgrade_relay(rpp),
-            TcpStateMachine::ExpectProxyProtocol(epp) => self.upgrade_expect(epp),
-            TcpStateMachine::Pipe(_) => None,
-            TcpStateMachine::FailedUpgrade(_) => todo!(),
+            UdpStateMachine::SendProxyProtocol(spp) => self.upgrade_send(spp),
+            UdpStateMachine::RelayProxyProtocol(rpp) => self.upgrade_relay(rpp),
+            UdpStateMachine::ExpectProxyProtocol(epp) => self.upgrade_expect(epp),
+            UdpStateMachine::Pipe(_) => None,
+            UdpStateMachine::FailedUpgrade(_) => todo!(),
         };
 
         match new_state {
@@ -358,8 +358,8 @@ impl TcpSession {
 
     fn upgrade_send(
         &mut self,
-        send_proxy_protocol: SendProxyProtocol<MioTcpStream>,
-    ) -> Option<TcpStateMachine> {
+        send_proxy_protocol: SendProxyProtocol<MioUdpStream>,
+    ) -> Option<UdpStateMachine> {
         if self.backend_buffer.is_some() && self.frontend_buffer.is_some() {
             let mut pipe = send_proxy_protocol.into_pipe(
                 self.frontend_buffer.take().unwrap(),
@@ -369,8 +369,8 @@ impl TcpSession {
 
             pipe.set_cluster_id(self.cluster_id.clone());
             gauge_add!("protocol.proxy.send", -1);
-            gauge_add!("protocol.tcp", 1);
-            return Some(TcpStateMachine::Pipe(pipe));
+            gauge_add!("protocol.udp", 1);
+            return Some(UdpStateMachine::Pipe(pipe));
         }
 
         error!(
@@ -380,14 +380,14 @@ impl TcpSession {
         None
     }
 
-    fn upgrade_relay(&mut self, rpp: RelayProxyProtocol<MioTcpStream>) -> Option<TcpStateMachine> {
+    fn upgrade_relay(&mut self, rpp: RelayProxyProtocol<MioUdpStream>) -> Option<UdpStateMachine> {
         if self.backend_buffer.is_some() {
             let mut pipe =
                 rpp.into_pipe(self.backend_buffer.take().unwrap(), self.listener.clone());
             pipe.set_cluster_id(self.cluster_id.clone());
             gauge_add!("protocol.proxy.relay", -1);
-            gauge_add!("protocol.tcp", 1);
-            return Some(TcpStateMachine::Pipe(pipe));
+            gauge_add!("protocol.udp", 1);
+            return Some(UdpStateMachine::Pipe(pipe));
         }
 
         error!(
@@ -399,8 +399,8 @@ impl TcpSession {
 
     fn upgrade_expect(
         &mut self,
-        epp: ExpectProxyProtocol<MioTcpStream>,
-    ) -> Option<TcpStateMachine> {
+        epp: ExpectProxyProtocol<MioUdpStream>,
+    ) -> Option<UdpStateMachine> {
         if self.frontend_buffer.is_some() && self.backend_buffer.is_some() {
             let mut pipe = epp.into_pipe(
                 self.frontend_buffer.take().unwrap(),
@@ -412,8 +412,8 @@ impl TcpSession {
 
             pipe.set_cluster_id(self.cluster_id.clone());
             gauge_add!("protocol.proxy.expect", -1);
-            gauge_add!("protocol.tcp", 1);
-            return Some(TcpStateMachine::Pipe(pipe));
+            gauge_add!("protocol.udp", 1);
+            return Some(UdpStateMachine::Pipe(pipe));
         }
 
         error!(
@@ -425,30 +425,30 @@ impl TcpSession {
 
     fn front_readiness(&mut self) -> &mut Readiness {
         match &mut self.state {
-            TcpStateMachine::Pipe(pipe) => &mut pipe.frontend_readiness,
-            TcpStateMachine::SendProxyProtocol(pp) => &mut pp.frontend_readiness,
-            TcpStateMachine::RelayProxyProtocol(pp) => &mut pp.frontend_readiness,
-            TcpStateMachine::ExpectProxyProtocol(pp) => &mut pp.frontend_readiness,
-            TcpStateMachine::FailedUpgrade(_) => unreachable!(),
+            UdpStateMachine::Pipe(pipe) => &mut pipe.frontend_readiness,
+            UdpStateMachine::SendProxyProtocol(pp) => &mut pp.frontend_readiness,
+            UdpStateMachine::RelayProxyProtocol(pp) => &mut pp.frontend_readiness,
+            UdpStateMachine::ExpectProxyProtocol(pp) => &mut pp.frontend_readiness,
+            UdpStateMachine::FailedUpgrade(_) => unreachable!(),
         }
     }
 
     fn back_readiness(&mut self) -> Option<&mut Readiness> {
         match &mut self.state {
-            TcpStateMachine::Pipe(pipe) => Some(&mut pipe.backend_readiness),
-            TcpStateMachine::SendProxyProtocol(pp) => Some(&mut pp.backend_readiness),
-            TcpStateMachine::RelayProxyProtocol(pp) => Some(&mut pp.backend_readiness),
-            TcpStateMachine::ExpectProxyProtocol(_) => None,
-            TcpStateMachine::FailedUpgrade(_) => unreachable!(),
+            UdpStateMachine::Pipe(pipe) => Some(&mut pipe.backend_readiness),
+            UdpStateMachine::SendProxyProtocol(pp) => Some(&mut pp.backend_readiness),
+            UdpStateMachine::RelayProxyProtocol(pp) => Some(&mut pp.backend_readiness),
+            UdpStateMachine::ExpectProxyProtocol(_) => None,
+            UdpStateMachine::FailedUpgrade(_) => unreachable!(),
         }
     }
 
-    fn set_back_socket(&mut self, socket: MioTcpStream) {
+    fn set_back_socket(&mut self, socket: MioUdpStream) {
         match &mut self.state {
-            TcpStateMachine::Pipe(pipe) => pipe.set_back_socket(socket),
-            TcpStateMachine::SendProxyProtocol(pp) => pp.set_back_socket(socket),
-            TcpStateMachine::RelayProxyProtocol(pp) => pp.set_back_socket(socket),
-            TcpStateMachine::ExpectProxyProtocol(_) => {
+            UdpStateMachine::Pipe(pipe) => pipe.set_back_socket(socket),
+            UdpStateMachine::SendProxyProtocol(pp) => pp.set_back_socket(socket),
+            UdpStateMachine::RelayProxyProtocol(pp) => pp.set_back_socket(socket),
+            UdpStateMachine::ExpectProxyProtocol(_) => {
                 error!(
                     "{} We should not set the back socket for the expect proxy protocol",
                     log_context!(self)
@@ -458,7 +458,7 @@ impl TcpSession {
                     log_context!(self)
                 );
             }
-            TcpStateMachine::FailedUpgrade(_) => unreachable!(),
+            UdpStateMachine::FailedUpgrade(_) => unreachable!(),
         }
     }
 
@@ -466,17 +466,17 @@ impl TcpSession {
         self.backend_token = Some(token);
 
         match &mut self.state {
-            TcpStateMachine::Pipe(pipe) => pipe.set_back_token(token),
-            TcpStateMachine::SendProxyProtocol(pp) => pp.set_back_token(token),
-            TcpStateMachine::RelayProxyProtocol(pp) => pp.set_back_token(token),
-            TcpStateMachine::ExpectProxyProtocol(_) => self.backend_token = Some(token),
-            TcpStateMachine::FailedUpgrade(_) => unreachable!(),
+            UdpStateMachine::Pipe(pipe) => pipe.set_back_token(token),
+            UdpStateMachine::SendProxyProtocol(pp) => pp.set_back_token(token),
+            UdpStateMachine::RelayProxyProtocol(pp) => pp.set_back_token(token),
+            UdpStateMachine::ExpectProxyProtocol(_) => self.backend_token = Some(token),
+            UdpStateMachine::FailedUpgrade(_) => unreachable!(),
         }
     }
 
     fn set_backend_id(&mut self, id: String) {
         self.backend_id = Some(id.clone());
-        if let TcpStateMachine::Pipe(pipe) = &mut self.state {
+        if let UdpStateMachine::Pipe(pipe) = &mut self.state {
             pipe.set_backend_id(Some(id));
         }
     }
@@ -504,7 +504,7 @@ impl TcpSession {
                 .set_duration(self.configured_backend_timeout);
             self.container_frontend_timeout.reset();
 
-            if let TcpStateMachine::SendProxyProtocol(spp) = &mut self.state {
+            if let UdpStateMachine::SendProxyProtocol(spp) = &mut self.state {
                 spp.set_back_connected(BackendConnectionStatus::Connected);
             }
 
@@ -750,7 +750,7 @@ impl TcpSession {
                 log_context!(self), MAX_LOOP_ITERATIONS
             );
 
-            incr!("tcp.infinite_loop.error");
+            incr!("udp.infinite_loop.error");
 
             let front_interest = self.front_readiness().interest & self.front_readiness().event;
             let back_interest = self
@@ -777,7 +777,7 @@ impl TcpSession {
         SessionResult::Continue
     }
 
-    /// TCP session closes its backend on its own, without defering this task to the state
+    /// UDP session closes its backend on its own, without defering this task to the state
     fn close_backend(&mut self) {
         if let (Some(token), Some(fd)) = (
             self.backend_token,
@@ -838,7 +838,7 @@ impl TcpSession {
             .borrow()
             .cluster_id
             .clone()
-            .ok_or(BackendConnectionError::NotFound(ObjectKind::TcpCluster))?;
+            .ok_or(BackendConnectionError::NotFound(ObjectKind::UdpCluster))?;
 
         self.cluster_id = Some(cluster_id.clone());
 
@@ -910,19 +910,19 @@ impl TcpSession {
     }
 }
 
-impl ProxySession for TcpSession {
+impl ProxySession for UdpSession {
     fn close(&mut self) {
         if self.has_been_closed {
             return;
         }
 
         // TODO: the state should handle the timeouts
-        trace!("{} Closing TCP session", log_context!(self));
+        trace!("{} Closing UDP session", log_context!(self));
         self.metrics.service_stop();
 
         // Restore gauges
         match self.state.marker() {
-            StateMarker::Pipe => gauge_add!("protocol.tcp", -1),
+            StateMarker::Pipe => gauge_add!("protocol.udp", -1),
             StateMarker::SendProxyProtocol => gauge_add!("protocol.proxy.send", -1),
             StateMarker::RelayProxyProtocol => gauge_add!("protocol.proxy.relay", -1),
             StateMarker::ExpectProxyProtocol => gauge_add!("protocol.proxy.expect", -1),
@@ -930,10 +930,10 @@ impl ProxySession for TcpSession {
 
         if self.state.failed() {
             match self.state.marker() {
-                StateMarker::Pipe => incr!("tcp.upgrade.pipe.failed"),
-                StateMarker::SendProxyProtocol => incr!("tcp.upgrade.send.failed"),
-                StateMarker::RelayProxyProtocol => incr!("tcp.upgrade.relay.failed"),
-                StateMarker::ExpectProxyProtocol => incr!("tcp.upgrade.expect.failed"),
+                StateMarker::Pipe => incr!("udp.upgrade.pipe.failed"),
+                StateMarker::SendProxyProtocol => incr!("udp.upgrade.send.failed"),
+                StateMarker::RelayProxyProtocol => incr!("udp.upgrade.relay.failed"),
+                StateMarker::ExpectProxyProtocol => incr!("udp.upgrade.expect.failed"),
             }
             return;
         }
@@ -959,7 +959,7 @@ impl ProxySession for TcpSession {
             let fd = front_socket.as_raw_fd();
             if let Err(e) = proxy.registry.deregister(&mut SourceFd(&fd)) {
                 error!(
-                    "{} Error deregistering front socket({:?}) while closing TCP session: {:?}",
+                    "{} Error deregistering front socket({:?}) while closing UDP session: {:?}",
                     log_context!(self),
                     fd,
                     e
@@ -990,7 +990,7 @@ impl ProxySession for TcpSession {
     }
 
     fn protocol(&self) -> Protocol {
-        Protocol::TCP
+        Protocol::UDP
     }
 
     fn update_readiness(&mut self, token: Token, events: Ready) {
@@ -1041,27 +1041,27 @@ impl ProxySession for TcpSession {
 
     fn print_session(&self) {
         let state: String = match &self.state {
-            TcpStateMachine::ExpectProxyProtocol(_) => String::from("Expect"),
-            TcpStateMachine::SendProxyProtocol(_) => String::from("Send"),
-            TcpStateMachine::RelayProxyProtocol(_) => String::from("Relay"),
-            TcpStateMachine::Pipe(_) => String::from("TCP"),
-            TcpStateMachine::FailedUpgrade(marker) => format!("FailedUpgrade({marker:?})"),
+            UdpStateMachine::ExpectProxyProtocol(_) => String::from("Expect"),
+            UdpStateMachine::SendProxyProtocol(_) => String::from("Send"),
+            UdpStateMachine::RelayProxyProtocol(_) => String::from("Relay"),
+            UdpStateMachine::Pipe(_) => String::from("UDP"),
+            UdpStateMachine::FailedUpgrade(marker) => format!("FailedUpgrade({marker:?})"),
         };
 
         let front_readiness = match &self.state {
-            TcpStateMachine::ExpectProxyProtocol(expect) => Some(&expect.frontend_readiness),
-            TcpStateMachine::SendProxyProtocol(send) => Some(&send.frontend_readiness),
-            TcpStateMachine::RelayProxyProtocol(relay) => Some(&relay.frontend_readiness),
-            TcpStateMachine::Pipe(pipe) => Some(&pipe.frontend_readiness),
-            TcpStateMachine::FailedUpgrade(_) => None,
+            UdpStateMachine::ExpectProxyProtocol(expect) => Some(&expect.frontend_readiness),
+            UdpStateMachine::SendProxyProtocol(send) => Some(&send.frontend_readiness),
+            UdpStateMachine::RelayProxyProtocol(relay) => Some(&relay.frontend_readiness),
+            UdpStateMachine::Pipe(pipe) => Some(&pipe.frontend_readiness),
+            UdpStateMachine::FailedUpgrade(_) => None,
         };
 
         let back_readiness = match &self.state {
-            TcpStateMachine::SendProxyProtocol(send) => Some(&send.backend_readiness),
-            TcpStateMachine::RelayProxyProtocol(relay) => Some(&relay.backend_readiness),
-            TcpStateMachine::Pipe(pipe) => Some(&pipe.backend_readiness),
-            TcpStateMachine::ExpectProxyProtocol(_) => None,
-            TcpStateMachine::FailedUpgrade(_) => None,
+            UdpStateMachine::SendProxyProtocol(send) => Some(&send.backend_readiness),
+            UdpStateMachine::RelayProxyProtocol(relay) => Some(&relay.backend_readiness),
+            UdpStateMachine::Pipe(pipe) => Some(&pipe.backend_readiness),
+            UdpStateMachine::ExpectProxyProtocol(_) => None,
+            UdpStateMachine::FailedUpgrade(_) => None,
         };
 
         error!(
@@ -1088,17 +1088,17 @@ impl ProxySession for TcpSession {
     }
 }
 
-pub struct TcpListener {
+pub struct UdpListener {
     active: SessionIsToBeClosed,
     address: SocketAddr,
     cluster_id: Option<String>,
-    config: TcpListenerConfig,
-    listener: Option<MioTcpListener>,
+    config: UdpListenerConfig,
+    listener: Option<MioUdpListener>,
     tags: BTreeMap<String, CachedTags>,
     token: Token,
 }
 
-impl ListenerHandler for TcpListener {
+impl ListenerHandler for UdpListener {
     fn get_addr(&self) -> &SocketAddr {
         &self.address
     }
@@ -1115,9 +1115,9 @@ impl ListenerHandler for TcpListener {
     }
 }
 
-impl TcpListener {
-    fn new(config: TcpListenerConfig, token: Token) -> Result<TcpListener, ListenerError> {
-        Ok(TcpListener {
+impl UdpListener {
+    fn new(config: UdpListenerConfig, token: Token) -> Result<UdpListener, ListenerError> {
+        Ok(UdpListener {
             cluster_id: None,
             listener: None,
             token,
@@ -1131,13 +1131,13 @@ impl TcpListener {
     pub fn activate(
         &mut self,
         registry: &Registry,
-        tcp_listener: Option<MioTcpListener>,
+        udp_listener: Option<MioUdpListener>,
     ) -> Result<Token, ProxyError> {
         if self.active {
             return Ok(self.token);
         }
 
-        let mut listener = match tcp_listener {
+        let mut listener = match udp_listener {
             Some(listener) => listener,
             None => {
                 let address = self.config.address.into();
@@ -1180,24 +1180,24 @@ pub struct ClusterConfiguration {
     // load_balancing: LoadBalancingAlgorithms,
 }
 
-pub struct TcpProxy {
+pub struct UdpProxy {
     fronts: HashMap<String, Token>,
     backends: Rc<RefCell<BackendMap>>,
-    listeners: HashMap<Token, Rc<RefCell<TcpListener>>>,
+    listeners: HashMap<Token, Rc<RefCell<UdpListener>>>,
     configs: HashMap<ClusterId, ClusterConfiguration>,
     registry: Registry,
     sessions: Rc<RefCell<SessionManager>>,
     pool: Rc<RefCell<Pool>>,
 }
 
-impl TcpProxy {
+impl UdpProxy {
     pub fn new(
         registry: Registry,
         sessions: Rc<RefCell<SessionManager>>,
         pool: Rc<RefCell<Pool>>,
         backends: Rc<RefCell<BackendMap>>,
-    ) -> TcpProxy {
-        TcpProxy {
+    ) -> UdpProxy {
+        UdpProxy {
             backends,
             listeners: HashMap::new(),
             configs: HashMap::new(),
@@ -1210,14 +1210,14 @@ impl TcpProxy {
 
     pub fn add_listener(
         &mut self,
-        config: TcpListenerConfig,
+        config: UdpListenerConfig,
         token: Token,
     ) -> Result<Token, ProxyError> {
         match self.listeners.entry(token) {
             Entry::Vacant(entry) => {
-                let tcp_listener =
-                    TcpListener::new(config, token).map_err(ProxyError::AddListener)?;
-                entry.insert(Rc::new(RefCell::new(tcp_listener)));
+                let udp_listener =
+                    UdpListener::new(config, token).map_err(ProxyError::AddListener)?;
+                entry.insert(Rc::new(RefCell::new(udp_listener)));
                 Ok(token)
             }
             _ => Err(ProxyError::ListenerAlreadyPresent),
@@ -1234,7 +1234,7 @@ impl TcpProxy {
     pub fn activate_listener(
         &self,
         addr: &SocketAddr,
-        tcp_listener: Option<MioTcpListener>,
+        udp_listener: Option<MioUdpListener>,
     ) -> Result<Token, ProxyError> {
         let listener = self
             .listeners
@@ -1242,10 +1242,10 @@ impl TcpProxy {
             .find(|listener| listener.borrow().address == *addr)
             .ok_or(ProxyError::NoListenerFound(*addr))?;
 
-        listener.borrow_mut().activate(&self.registry, tcp_listener)
+        listener.borrow_mut().activate(&self.registry, udp_listener)
     }
 
-    pub fn give_back_listeners(&mut self) -> Vec<(SocketAddr, MioTcpListener)> {
+    pub fn give_back_listeners(&mut self) -> Vec<(SocketAddr, MioUdpListener)> {
         self.listeners
             .values()
             .filter_map(|listener| {
@@ -1262,7 +1262,7 @@ impl TcpProxy {
     pub fn give_back_listener(
         &mut self,
         address: SocketAddr,
-    ) -> Result<(Token, MioTcpListener), ProxyError> {
+    ) -> Result<(Token, MioUdpListener), ProxyError> {
         let listener = self
             .listeners
             .values()
@@ -1279,7 +1279,7 @@ impl TcpProxy {
         Ok((owned.token, taken_listener))
     }
 
-    pub fn add_tcp_front(&mut self, front: RequestTcpFrontend) -> Result<(), ProxyError> {
+    pub fn add_udp_front(&mut self, front: RequestUdpFrontend) -> Result<(), ProxyError> {
         let address = front.address.into();
 
         let mut listener = self
@@ -1296,7 +1296,7 @@ impl TcpProxy {
         Ok(())
     }
 
-    pub fn remove_tcp_front(&mut self, front: RequestTcpFrontend) -> Result<(), ProxyError> {
+    pub fn remove_udp_front(&mut self, front: RequestUdpFrontend) -> Result<(), ProxyError> {
         let address = front.address.into();
 
         let mut listener = match self
@@ -1316,22 +1316,22 @@ impl TcpProxy {
     }
 }
 
-impl ProxyConfiguration for TcpProxy {
+impl ProxyConfiguration for UdpProxy {
     fn notify(&mut self, message: WorkerRequest) -> WorkerResponse {
         let request_type = match message.content.request_type {
             Some(t) => t,
             None => return WorkerResponse::error(message.id, "Empty request"),
         };
         match request_type {
-            RequestType::AddTcpFrontend(front) => {
-                if let Err(err) = self.add_tcp_front(front) {
+            RequestType::AddUdpFrontend(front) => {
+                if let Err(err) = self.add_udp_front(front) {
                     return WorkerResponse::error(message.id, err);
                 }
 
                 WorkerResponse::ok(message.id)
             }
-            RequestType::RemoveTcpFrontend(front) => {
-                if let Err(err) = self.remove_tcp_front(front) {
+            RequestType::RemoveUdpFrontend(front) => {
+                if let Err(err) = self.remove_udp_front(front) {
                     return WorkerResponse::error(message.id, err);
                 }
 
@@ -1381,7 +1381,7 @@ impl ProxyConfiguration for TcpProxy {
                 if !self.remove_listener(remove.address.into()) {
                     WorkerResponse::error(
                         message.id,
-                        format!("no TCP listener to remove at address {:?}", remove.address),
+                        format!("no UDP listener to remove at address {:?}", remove.address),
                     )
                 } else {
                     WorkerResponse::ok(message.id)
@@ -1389,7 +1389,7 @@ impl ProxyConfiguration for TcpProxy {
             }
             command => {
                 debug!(
-                    "{} unsupported message for TCP proxy, ignoring {:?}",
+                    "{} unsupported message for UDP proxy, ignoring {:?}",
                     message.id, command
                 );
                 WorkerResponse::error(message.id, "unsupported message")
@@ -1397,11 +1397,11 @@ impl ProxyConfiguration for TcpProxy {
         }
     }
 
-    fn accept(&mut self, token: ListenToken) -> Result<MioTcpStream, AcceptError> {
+    fn accept(&mut self, token: ListenToken) -> Result<MioUdpStream, AcceptError> {
         let internal_token = Token(token.0);
         if let Some(listener) = self.listeners.get(&internal_token) {
-            if let Some(tcp_listener) = &listener.borrow().listener {
-                tcp_listener
+            if let Some(udp_listener) = &listener.borrow().listener {
+                udp_listener
                     .accept()
                     .map(|(frontend_sock, _)| frontend_sock)
                     .map_err(|e| match e.kind() {
@@ -1421,7 +1421,7 @@ impl ProxyConfiguration for TcpProxy {
 
     fn create_session(
         &mut self,
-        mut frontend_sock: MioTcpStream,
+        mut frontend_sock: MioUdpStream,
         token: ListenToken,
         wait_time: Duration,
         proxy: Rc<RefCell<Self>>,
@@ -1486,7 +1486,7 @@ impl ProxyConfiguration for TcpProxy {
             return Err(AcceptError::RegisterError);
         }
 
-        let session = TcpSession::new(
+        let session = UdpSession::new(
             back_buffer,
             None,
             owned.cluster_id.clone(),
@@ -1501,7 +1501,7 @@ impl ProxyConfiguration for TcpProxy {
             frontend_sock,
             wait_time,
         );
-        incr!("tcp.requests");
+        incr!("udp.requests");
 
         let session = Rc::new(RefCell::new(session));
         entry.insert(session);
@@ -1514,8 +1514,8 @@ pub mod testing {
     use crate::testing::*;
 
     /// This is not directly used by Sōzu but is available for example and testing purposes
-    pub fn start_tcp_worker(
-        config: TcpListenerConfig,
+    pub fn start_udp_worker(
+        config: UdpListenerConfig,
         max_buffers: usize,
         buffer_size: usize,
         channel: ProxyChannel,
@@ -1538,12 +1538,12 @@ pub mod testing {
             let entry = sessions.slab.vacant_entry();
             let key = entry.key();
             let _ = entry.insert(Rc::new(RefCell::new(ListenSession {
-                protocol: Protocol::TCPListen,
+                protocol: Protocol::UDPListen,
             })));
             Token(key)
         };
 
-        let mut proxy = TcpProxy::new(registry, sessions.clone(), pool.clone(), backends.clone());
+        let mut proxy = UdpProxy::new(registry, sessions.clone(), pool.clone(), backends.clone());
         proxy
             .add_listener(config, token)
             .with_context(|| "Failed at creating adding the listener")?;
@@ -1560,8 +1560,8 @@ pub mod testing {
             backends,
             None,
             None,
-            Some(proxy),
             None,
+            Some(proxy),
             server_config,
             None,
             false,
@@ -1577,13 +1577,13 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::testing::start_tcp_worker;
+    use super::testing::start_udp_worker;
     use crate::testing::*;
 
     use sozu_command::proto::command::SocketAddress;
     use std::{
         io::{Read, Write},
-        net::{Shutdown, TcpListener, TcpStream},
+        net::{Shutdown, UdpListener, UdpStream},
         str,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -1596,7 +1596,7 @@ mod tests {
         channel::Channel,
         config::ListenerBuilder,
         proto::command::{
-            request::RequestType, LoadBalancingParams, RequestTcpFrontend, WorkerRequest,
+            request::RequestType, LoadBalancingParams, RequestUdpFrontend, WorkerRequest,
             WorkerResponse,
         },
     };
@@ -1606,10 +1606,10 @@ mod tests {
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn size_test() {
-      assert_size!(Pipe<mio::net::TcpStream>, 224);
-      assert_size!(SendProxyProtocol<mio::net::TcpStream>, 144);
-      assert_size!(RelayProxyProtocol<mio::net::TcpStream>, 152);
-      assert_size!(ExpectProxyProtocol<mio::net::TcpStream>, 520);
+      assert_size!(Pipe<mio::net::UdpStream>, 224);
+      assert_size!(SendProxyProtocol<mio::net::UdpStream>, 144);
+      assert_size!(RelayProxyProtocol<mio::net::UdpStream>, 152);
+      assert_size!(ExpectProxyProtocol<mio::net::UdpStream>, 520);
       assert_size!(State, 528);
       // fails depending on the platform?
       //assert_size!(Session, 808);
@@ -1623,9 +1623,9 @@ mod tests {
         let _tx = start_proxy().expect("Could not start proxy");
         barrier.wait();
 
-        let mut s1 = TcpStream::connect("127.0.0.1:1234").expect("could not connect");
-        let s3 = TcpStream::connect("127.0.0.1:1234").expect("could not connect");
-        let mut s2 = TcpStream::connect("127.0.0.1:1234").expect("could not connect");
+        let mut s1 = UdpStream::connect("127.0.0.1:1234").expect("could not connect");
+        let s3 = UdpStream::connect("127.0.0.1:1234").expect("could not connect");
+        let mut s2 = UdpStream::connect("127.0.0.1:1234").expect("could not connect");
 
         s1.write(&b"hello "[..])
             .map_err(|e| {
@@ -1680,11 +1680,11 @@ mod tests {
     }
 
     fn start_server(barrier: Arc<Barrier>) {
-        let listener = TcpListener::bind("127.0.0.1:5678").expect("could not bind");
-        fn handle_client(stream: &mut TcpStream, id: u8) {
+        let listener = UdpListener::bind("127.0.0.1:5678").expect("could not bind");
+        fn handle_client(listener: &mut UdpListener, id: u8) {
             let mut buf = [0; 128];
             let _response = b" END";
-            while let Ok(sz) = stream.read(&mut buf[..]) {
+            while let Ok(sz) = listener.recv_from(&mut buf[..]) {
                 if sz > 0 {
                     println!("ECHO[{}] got \"{:?}\"", id, str::from_utf8(&buf[..sz]));
                     stream.write(&buf[..sz]).unwrap();
@@ -1704,7 +1704,7 @@ mod tests {
                     Ok(mut stream) => {
                         thread::spawn(move || {
                             println!("got a new client: {count}");
-                            handle_client(&mut stream, count)
+                            handle_client(&mut listener, count)
                         });
                     }
                     Err(e) => {
@@ -1718,20 +1718,20 @@ mod tests {
 
     /// used in tests only
     pub fn start_proxy() -> anyhow::Result<Channel<WorkerRequest, WorkerResponse>> {
-        let config = ListenerBuilder::new_tcp(SocketAddress::new_v4(127, 0, 0, 1, 1234))
-            .to_tcp(None)
+        let config = ListenerBuilder::new_udp(SocketAddress::new_v4(127, 0, 0, 1, 1234))
+            .to_udp(None)
             .expect("could not create listener config");
 
         let (mut command, channel) =
             Channel::generate(1000, 10000).with_context(|| "should create a channel")?;
         let _jg = thread::spawn(move || {
             setup_test_logger!();
-            start_tcp_worker(config, 100, 16384, channel).expect("could not start the tcp server");
+            start_udp_worker(config, 100, 16384, channel).expect("could not start the udp server");
         });
 
         command.blocking().unwrap();
         {
-            let front = RequestTcpFrontend {
+            let front = RequestUdpFrontend {
                 cluster_id: String::from("yolo"),
                 address: SocketAddress::new_v4(127, 0, 0, 1, 1234),
                 ..Default::default()
@@ -1748,7 +1748,7 @@ mod tests {
             command
                 .write_message(&WorkerRequest {
                     id: String::from("ID_YOLO1"),
-                    content: RequestType::AddTcpFrontend(front).into(),
+                    content: RequestType::AddUdpFrontend(front).into(),
                 })
                 .unwrap();
             command
@@ -1759,7 +1759,7 @@ mod tests {
                 .unwrap();
         }
         {
-            let front = RequestTcpFrontend {
+            let front = RequestUdpFrontend {
                 cluster_id: String::from("yolo"),
                 address: SocketAddress::new_v4(127, 0, 0, 1, 1235),
                 ..Default::default()
@@ -1775,7 +1775,7 @@ mod tests {
             command
                 .write_message(&WorkerRequest {
                     id: String::from("ID_YOLO3"),
-                    content: RequestType::AddTcpFrontend(front).into(),
+                    content: RequestType::AddUdpFrontend(front).into(),
                 })
                 .unwrap();
             command

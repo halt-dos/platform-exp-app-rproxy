@@ -11,7 +11,7 @@ use sozu_command_lib::{
     logging::setup_default_logging,
     proto::command::{
         request::RequestType, AddBackend, LoadBalancingParams, RequestTcpFrontend, SocketAddress,
-        TcpListenerConfig, WorkerRequest,
+        TcpListenerConfig, WorkerRequest, RequestUdpFrontend, UdpListenerConfig
     },
 };
 

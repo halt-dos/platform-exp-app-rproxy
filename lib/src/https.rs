@@ -1485,6 +1485,7 @@ pub mod testing {
             None,
             Some(proxy),
             None,
+            None,
             server_config,
             None,
             false,

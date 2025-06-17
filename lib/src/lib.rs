@@ -333,6 +333,7 @@ mod splice;
 
 pub mod server;
 pub mod tcp;
+pub mod udp;
 
 pub mod https;
 
@@ -370,9 +371,11 @@ pub enum Protocol {
     HTTP,
     HTTPS,
     TCP,
+    UDP,
     HTTPListen,
     HTTPSListen,
     TCPListen,
+    UDPListen,
     Channel,
     Metrics,
     Timer,
@@ -1158,7 +1161,7 @@ pub mod testing {
     pub use slab::Slab;
     pub use sozu_command::{
         proto::command::{
-            HttpListenerConfig, HttpsListenerConfig, ServerConfig, TcpListenerConfig,
+            HttpListenerConfig, HttpsListenerConfig, ServerConfig, TcpListenerConfig, UdpListenerConfig
         },
         scm_socket::{Listeners, ScmSocket},
     };
@@ -1171,6 +1174,7 @@ pub mod testing {
         server::Server,
         server::{ListenSession, ProxyChannel, SessionManager},
         tcp::TcpProxy,
+        udp::UdpProxy,
         Protocol, ProxySession,
     };
 

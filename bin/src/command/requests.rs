@@ -64,7 +64,9 @@ impl Server {
             | RequestType::AddHttpsFrontend(_)
             | RequestType::AddHttpsListener(_)
             | RequestType::AddTcpFrontend(_)
+            | RequestType::AddUdpFrontend(_)
             | RequestType::AddTcpListener(_)
+            | RequestType::AddUdpListener(_)
             | RequestType::ConfigureMetrics(_)
             | RequestType::DeactivateListener(_)
             | RequestType::RemoveBackend(_)
@@ -74,6 +76,7 @@ impl Server {
             | RequestType::RemoveHttpsFrontend(_)
             | RequestType::RemoveListener(_)
             | RequestType::RemoveTcpFrontend(_)
+            | RequestType::RemoveUdpFrontend(_)
             | RequestType::ReplaceCertificate(_) => {
                 worker_request(self, client, request_type);
             }

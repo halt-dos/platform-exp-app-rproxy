@@ -5,7 +5,7 @@ use rusty_ulid::Ulid;
 use crate::{
     logging::{LogLevel, Rfc3339Time},
     proto::command::{
-        protobuf_endpoint, HttpEndpoint, ProtobufAccessLog, ProtobufEndpoint, TcpEndpoint,
+        protobuf_endpoint, HttpEndpoint, ProtobufAccessLog, ProtobufEndpoint, TcpEndpoint, UdpEndpoint,
     },
 };
 
@@ -72,6 +72,7 @@ pub enum EndpointRecord<'a> {
         reason: Option<&'a str>,
     },
     Tcp,
+    Udp,
 }
 
 /// used to aggregate tags in a session
@@ -155,6 +156,7 @@ impl RequestRecord<'_> {
                     reason: reason.duplicate(),
                 }),
                 EndpointRecord::Tcp => protobuf_endpoint::Inner::Tcp(TcpEndpoint {}),
+                EndpointRecord::Udp => protobuf_endpoint::Inner::Udp(UdpEndpoint {}),
             };
 
             ManuallyDrop::new(ProtobufAccessLog {

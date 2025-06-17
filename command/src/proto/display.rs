@@ -92,12 +92,15 @@ pub fn format_request_type(request_type: &RequestType) -> &str {
         RequestType::RemoveCertificate(_) => "RemoveCertificate",
         RequestType::AddTcpFrontend(_) => "AddTcpFrontend",
         RequestType::RemoveTcpFrontend(_) => "RemoveTcpFrontend",
+        RequestType::AddUdpFrontend(_) => "AddUdpFrontend",
+        RequestType::RemoveUdpFrontend(_) => "RemoveUdpFrontend",
         RequestType::AddBackend(_) => "AddBackend",
         RequestType::RemoveBackend(_) => "RemoveBackend",
         RequestType::AddHttpListener(_) => "AddHttpListener",
         RequestType::AddHttpsListener(_) => "AddHttpsListener",
         RequestType::AddTcpListener(_) => "AddTcpListener",
         RequestType::RemoveListener(_) => "RemoveListener",
+        RequestType::AddUdpListener(_) => "AddUdpListener",
         RequestType::ActivateListener(_) => "ActivateListener",
         RequestType::DeactivateListener(_) => "DeactivateListener",
         RequestType::QueryClusterById(_) => "QueryClusterById",
@@ -999,7 +1002,10 @@ impl Display for ProtobufEndpoint {
             ),
             Some(protobuf_endpoint::Inner::Tcp(_)) => {
                 write!(f, "-")
-            }
+            },
+            Some(protobuf_endpoint::Inner::Udp(_)) => {
+                write!(f, "-")
+            },
             None => Ok(()),
         }
     }

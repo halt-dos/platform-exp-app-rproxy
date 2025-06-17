@@ -12,14 +12,14 @@ use sozu_command_lib::{
         QueryCertificatesFilters, QueryClusterByDomain, QueryClustersHashes, RemoveBackend,
         RemoveCertificate, RemoveListener, ReplaceCertificate, RequestHttpFrontend,
         RequestTcpFrontend, RulePosition, SocketAddress, SoftStop, Status, SubscribeEvents,
-        TlsVersion,
+        TlsVersion, RequestUdpFrontend
     },
 };
 
 use crate::{
     cli::{
         BackendCmd, ClusterCmd, HttpFrontendCmd, HttpListenerCmd, HttpsListenerCmd, MetricsCmd,
-        TcpFrontendCmd, TcpListenerCmd,
+        TcpFrontendCmd, TcpListenerCmd, UdpFrontendCmd, UdpListenerCmd,
     },
     ctl::CommandManager,
 };
@@ -224,6 +224,27 @@ impl CommandManager {
             ),
             TcpFrontendCmd::Remove { id, address } => self.send_request(
                 RequestType::RemoveTcpFrontend(RequestTcpFrontend {
+                    cluster_id: id,
+                    address: address.into(),
+                    ..Default::default()
+                })
+                .into(),
+            ),
+        }
+    }
+
+    pub fn udp_frontend_command(&mut self, cmd: UdpFrontendCmd) -> Result<(), CtlError> {
+        match cmd {
+            UdpFrontendCmd::Add { id, address, tags } => self.send_request(
+                RequestType::AddUdpFrontend(RequestUdpFrontend {
+                    cluster_id: id,
+                    address: address.into(),
+                    tags: tags.unwrap_or(BTreeMap::new()),
+                })
+                .into(),
+            ),
+            UdpFrontendCmd::Remove { id, address } => self.send_request(
+                RequestType::RemoveUdpFrontend(RequestUdpFrontend {
                     cluster_id: id,
                     address: address.into(),
                     ..Default::default()
@@ -438,6 +459,34 @@ impl CommandManager {
             }
             TcpListenerCmd::Deactivate { address } => {
                 self.deactivate_listener(address.into(), ListenerType::Tcp)
+            }
+        }
+    }
+
+
+    pub fn udp_listener_command(&mut self, cmd: UdpListenerCmd) -> Result<(), CtlError> {
+        match cmd {
+            UdpListenerCmd::Add {
+                address,
+                public_address,
+                expect_proxy,
+            } => {
+                let listener = ListenerBuilder::new_udp(address.into())
+                    .with_public_address(public_address)
+                    .with_expect_proxy(expect_proxy)
+                    .to_tcp(Some(&self.config))
+                    .map_err(CtlError::CreateListener)?;
+
+                self.send_request(RequestType::AddUdpListener(listener).into())
+            }
+            UdpListenerCmd::Remove { address } => {
+                self.remove_listener(address.into(), ListenerType::Udp)
+            }
+            UdpListenerCmd::Activate { address } => {
+                self.activate_listener(address.into(), ListenerType::Udp)
+            }
+            UdpListenerCmd::Deactivate { address } => {
+                self.deactivate_listener(address.into(), ListenerType::Udp)
             }
         }
     }

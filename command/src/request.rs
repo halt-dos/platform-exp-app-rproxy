@@ -39,6 +39,7 @@ impl Request {
             to_http_proxy: false,
             to_https_proxy: false,
             to_tcp_proxy: false,
+            to_udp_proxy: false,
         };
         let request_type = match &self.request_type {
             Some(t) => t,
@@ -59,6 +60,10 @@ impl Request {
 
             RequestType::AddTcpFrontend(_) | RequestType::RemoveTcpFrontend(_) => {
                 proxy_destination.to_tcp_proxy = true
+            }
+
+            RequestType::AddUdpFrontend(_) | RequestType::RemoveUdpFrontend(_) => {
+                proxy_destination.to_udp_proxy = true
             }
 
             RequestType::AddCluster(_)
@@ -86,6 +91,7 @@ impl Request {
             RequestType::AddHttpsListener(_)
             | RequestType::AddHttpListener(_)
             | RequestType::AddTcpListener(_)
+            | RequestType::AddUdpListener(_)
             | RequestType::RemoveListener(_)
             | RequestType::ActivateListener(_)
             | RequestType::DeactivateListener(_)
@@ -155,6 +161,7 @@ pub struct ProxyDestinations {
     pub to_http_proxy: bool,
     pub to_https_proxy: bool,
     pub to_tcp_proxy: bool,
+    pub to_udp_proxy: bool,
 }
 
 impl RequestHttpFrontend {

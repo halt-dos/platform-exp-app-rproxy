@@ -57,6 +57,7 @@ pub enum WebSocketContext {
         reason: Option<String>,
     },
     Tcp,
+    Udp,
 }
 
 pub struct Pipe<Front: SocketHandler, L: ListenerHandler> {
@@ -217,6 +218,7 @@ impl<Front: SocketHandler, L: ListenerHandler> Pipe<Front, L> {
     fn protocol_string(&self) -> &'static str {
         match self.protocol {
             Protocol::TCP => "TCP",
+            Protocol::UDP => "UDP",
             Protocol::HTTP => "WS",
             Protocol::HTTPS => match self.frontend.protocol() {
                 TransportProtocol::Ssl2 => "WSS-SSL2",
@@ -653,6 +655,7 @@ impl<Front: SocketHandler, L: ListenerHandler> Pipe<Front, L> {
                 reason: reason.as_deref(),
             },
             WebSocketContext::Tcp => EndpointRecord::Tcp,
+            WebSocketContext::Udp => EndpointRecord::Udp,
         }
     }
 }

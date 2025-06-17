@@ -3,7 +3,7 @@ use std::{cmp::Ordering, collections::BTreeMap, fmt, net::SocketAddr};
 use crate::{
     proto::command::{
         AddBackend, FilteredTimeSerie, LoadBalancingParams, PathRule, PathRuleKind,
-        RequestHttpFrontend, RequestTcpFrontend, Response, ResponseContent, ResponseStatus,
+        RequestHttpFrontend, RequestTcpFrontend, RequestUdpFrontend, Response, ResponseContent, ResponseStatus,
         RulePosition, RunState, WorkerResponse,
     },
     state::ClusterId,
@@ -149,6 +149,25 @@ pub struct TcpFrontend {
 impl From<TcpFrontend> for RequestTcpFrontend {
     fn from(val: TcpFrontend) -> Self {
         RequestTcpFrontend {
+            cluster_id: val.cluster_id,
+            address: val.address.into(),
+            tags: val.tags,
+        }
+    }
+}
+
+/// A UDP frontend, as used *within* Sōzu
+#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UdpFrontend {
+    pub cluster_id: String,
+    pub address: SocketAddr,
+    /// custom tags to identify the frontend in the access logs
+    pub tags: BTreeMap<String, String>,
+}
+
+impl From<UdpFrontend> for RequestUdpFrontend {
+    fn from(val: UdpFrontend) -> Self {
+        RequestUdpFrontend {
             cluster_id: val.cluster_id,
             address: val.address.into(),
             tags: val.tags,

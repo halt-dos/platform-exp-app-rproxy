@@ -99,6 +99,12 @@ message Request {
     // query the state about how many requests of each type has been received
     // since startup
     CountRequests count_requests = 46;
+    // add a UDP listener
+    UdpListenerConfig add_udp_listener = 47;
+    // add a UDP frontend
+    RequestUdpFrontend add_udp_frontend = 48;
+    // remove a UDP frontend
+    RequestUdpFrontend remove_udp_frontend = 49;
   }
 }
 
@@ -179,6 +185,21 @@ message TcpListenerConfig {
     required bool active = 7 [default = false];
 }
 
+// details of an UDP listener
+message UdpListenerConfig {
+    required SocketAddress address = 1;
+    optional SocketAddress public_address = 2;
+    required bool expect_proxy = 3 [default = false];
+    // client inactive time, in seconds
+    required uint32 front_timeout = 4 [default = 60];
+    // backend server inactive time, in seconds
+    required uint32 back_timeout = 5 [default = 30];
+    // time to connect to the backend, in seconds
+    required uint32 connect_timeout = 6 [default = 3];
+    // wether the listener is actively listening on its socket
+    required bool active = 7 [default = false];
+}
+
 // custom HTTP answers, useful for 404, 503 pages
 message CustomHttpAnswers {
     // MovedPermanently
@@ -225,6 +246,7 @@ enum ListenerType {
     HTTP = 0;
     HTTPS = 1;
     TCP = 2;
+    UDP = 3;
 }
 
 // All listeners, listed
@@ -235,6 +257,8 @@ message ListenersList {
     map<string, HttpsListenerConfig> https_listeners = 2;
     // address -> tcp listener config
     map<string, TcpListenerConfig> tcp_listeners = 3;
+    // address -> udp listener config
+    map<string, UdpListenerConfig> udp_listeners = 4;
 }
 
 // An HTTP or HTTPS frontend, as order to, or received from, Sōzu
@@ -250,6 +274,14 @@ message RequestHttpFrontend {
 }
 
 message RequestTcpFrontend {
+    required string cluster_id = 1;
+    // the socket address on which to listen for incoming traffic
+    required SocketAddress address = 2;
+    // custom tags to identify the frontend in the access logs
+    map<string, string> tags = 3;
+}
+
+message RequestUdpFrontend {
     required string cluster_id = 1;
     // the socket address on which to listen for incoming traffic
     required SocketAddress address = 2;
@@ -508,6 +540,7 @@ message ListedFrontends {
     repeated RequestHttpFrontend http_frontends = 1;
     repeated RequestHttpFrontend https_frontends = 2;
     repeated RequestTcpFrontend tcp_frontends = 3;
+    repeated RequestUdpFrontend udp_frontends = 4;
 }
 
 message ClusterInformations {
@@ -522,6 +555,7 @@ message ClusterInformation {
     repeated RequestHttpFrontend https_frontends = 3;
     repeated RequestTcpFrontend tcp_frontends = 4;
     repeated AddBackend backends = 5;
+    repeated RequestUdpFrontend udp_frontends = 6;
 }
 
 // an event produced by a worker to notify about backends status
@@ -745,6 +779,8 @@ message ListenersCount {
     repeated string tls = 2;
     // socket addresses of TCP listeners
     repeated string tcp = 3;
+    // socket addresses of UDP listeners
+    repeated string udp = 4;
 }
 
 // the Sōzu state, passed to a new worker.
@@ -801,6 +837,7 @@ message ProtobufEndpoint {
     oneof inner {
         HttpEndpoint http = 1;
         TcpEndpoint tcp = 2;
+        UdpEndpoint udp = 3;
     }
 }
 
@@ -815,3 +852,5 @@ message HttpEndpoint {
 }
 
 message TcpEndpoint {}
+
+message UdpEndpoint {}

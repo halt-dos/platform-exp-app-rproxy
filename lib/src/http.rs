@@ -1033,6 +1033,7 @@ pub mod testing {
             Some(proxy),
             None,
             None,
+            None,
             server_config,
             None,
             false,

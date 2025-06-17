@@ -312,6 +312,11 @@ pub fn try_issue_810_panic(part2: bool) -> State {
         front_address,
     )));
 
+    worker.send_proxy_request_type(RequestType::AddUdpFrontend(Worker::default_udp_frontend(
+        "cluster_0",
+        front_address,
+    )));
+
     worker.send_proxy_request_type(RequestType::AddBackend(Worker::default_backend(
         "cluster_0",
         "cluster_0-0",

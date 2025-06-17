@@ -66,7 +66,7 @@ use crate::{
         LoadBalancingAlgorithms, LoadBalancingParams, LoadMetric, MetricsConfiguration, PathRule,
         ProtobufAccessLogFormat, ProxyProtocolConfig, Request, RequestHttpFrontend,
         RequestTcpFrontend, RulePosition, ServerConfig, ServerMetricsConfig, SocketAddress,
-        TcpListenerConfig, TlsVersion, WorkerRequest,
+        TcpListenerConfig, TlsVersion, WorkerRequest, UdpListenerConfig, RequestUdpFrontend
     },
     ObjectKind,
 };
@@ -606,6 +606,30 @@ impl ListenerBuilder {
             active: false,
         })
     }
+
+    /// build an UDP listener using defaults if no config or values were provided upstream
+    pub fn to_udp(&mut self, config: Option<&Config>) -> Result<UdpListenerConfig, ConfigError> {
+        if self.protocol != Some(ListenerProtocol::Udp) {
+            return Err(ConfigError::WrongListenerProtocol {
+                expected: ListenerProtocol::Udp,
+                found: self.protocol.to_owned(),
+            });
+        }
+
+        if let Some(config) = config {
+            self.assign_config_timeouts(config);
+        }
+
+        Ok(UdpListenerConfig {
+            address: self.address.into(),
+            public_address: self.public_address.map(|a| a.into()),
+            expect_proxy: self.expect_proxy.unwrap_or(false),
+            front_timeout: self.front_timeout.unwrap_or(DEFAULT_FRONT_TIMEOUT),
+            back_timeout: self.back_timeout.unwrap_or(DEFAULT_BACK_TIMEOUT),
+            connect_timeout: self.connect_timeout.unwrap_or(DEFAULT_CONNECT_TIMEOUT),
+            active: false,
+        })
+    }
 }
 
 /// read a custom HTTP answer from a file
@@ -699,6 +723,35 @@ impl FileClusterFrontendConfig {
         })
     }
 
+    pub fn to_udp_front(&self) -> Result<UdpFrontendConfig, ConfigError> {
+        if self.hostname.is_some() {
+            return Err(ConfigError::InvalidFrontendConfig("hostname".to_string()));
+        }
+        if self.path.is_some() {
+            return Err(ConfigError::InvalidFrontendConfig(
+                "path_prefix".to_string(),
+            ));
+        }
+        if self.certificate.is_some() {
+            return Err(ConfigError::InvalidFrontendConfig(
+                "certificate".to_string(),
+            ));
+        }
+        if self.hostname.is_some() {
+            return Err(ConfigError::InvalidFrontendConfig("hostname".to_string()));
+        }
+        if self.certificate_chain.is_some() {
+            return Err(ConfigError::InvalidFrontendConfig(
+                "certificate_chain".to_string(),
+            ));
+        }
+
+        Ok(UdpFrontendConfig {
+            address: self.address,
+            tags: self.tags.clone(),
+        })
+    }
+
     pub fn to_http_front(&self, _cluster_id: &str) -> Result<HttpFrontendConfig, ConfigError> {
         let hostname = match &self.hostname {
             Some(hostname) => hostname.to_owned(),
@@ -762,6 +815,7 @@ pub enum ListenerProtocol {
     Http,
     Https,
     Tcp,
+    Udp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1024,6 +1078,12 @@ pub struct TcpFrontendConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UdpFrontendConfig {
+    pub address: SocketAddr,
+    pub tags: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TcpClusterConfig {
     pub cluster_id: String,
     pub frontends: Vec<TcpFrontendConfig>,
@@ -1082,10 +1142,71 @@ impl TcpClusterConfig {
     }
 }
 
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UdpClusterConfig {
+    pub cluster_id: String,
+    pub frontends: Vec<UdpFrontendConfig>,
+    pub backends: Vec<BackendConfig>,
+    #[serde(default)]
+    pub proxy_protocol: Option<ProxyProtocolConfig>,
+    pub load_balancing: LoadBalancingAlgorithms,
+    pub load_metric: Option<LoadMetric>,
+}
+
+impl UdpClusterConfig {
+    pub fn generate_requests(&self) -> Result<Vec<Request>, ConfigError> {
+        let mut v = vec![RequestType::AddCluster(Cluster {
+            cluster_id: self.cluster_id.clone(),
+            sticky_session: false,
+            https_redirect: false,
+            proxy_protocol: self.proxy_protocol.map(|s| s as i32),
+            load_balancing: self.load_balancing as i32,
+            load_metric: self.load_metric.map(|s| s as i32),
+            answer_503: None,
+        })
+        .into()];
+
+        for frontend in &self.frontends {
+            v.push(
+                RequestType::AddUdpFrontend(RequestUdpFrontend {
+                    cluster_id: self.cluster_id.clone(),
+                    address: frontend.address.into(),
+                    tags: frontend.tags.clone().unwrap_or(BTreeMap::new()),
+                })
+                .into(),
+            );
+        }
+
+        for (backend_count, backend) in self.backends.iter().enumerate() {
+            let load_balancing_parameters = Some(LoadBalancingParams {
+                weight: backend.weight.unwrap_or(100) as i32,
+            });
+
+            v.push(
+                RequestType::AddBackend(AddBackend {
+                    cluster_id: self.cluster_id.clone(),
+                    backend_id: backend.backend_id.clone().unwrap_or_else(|| {
+                        format!("{}-{}-{}", self.cluster_id, backend_count, backend.address)
+                    }),
+                    address: backend.address.into(),
+                    load_balancing_parameters,
+                    sticky_id: backend.sticky_id.clone(),
+                    backup: backend.backup,
+                })
+                .into(),
+            );
+        }
+
+        Ok(v)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ClusterConfig {
     Http(HttpClusterConfig),
     Tcp(TcpClusterConfig),
+    Udp(UdpClusterConfig),
 }
 
 impl ClusterConfig {
@@ -1093,6 +1214,7 @@ impl ClusterConfig {
         match *self {
             ClusterConfig::Http(ref http) => http.generate_requests(),
             ClusterConfig::Tcp(ref tcp) => tcp.generate_requests(),
+            ClusterConfig::Udp(ref udp) => udp.generate_requests(),
         }
     }
 }
@@ -1299,6 +1421,12 @@ impl ConfigBuilder {
         Ok(())
     }
 
+    fn push_udp_listener(&mut self, mut listener: ListenerBuilder) -> Result<(), ConfigError> {
+        let listener = listener.to_udp(Some(&self.built))?;
+        self.built.udp_listeners.push(listener);
+        Ok(())
+    }
+
     fn populate_listeners(&mut self, listeners: Vec<ListenerBuilder>) -> Result<(), ConfigError> {
         for listener in listeners.iter() {
             if self.known_addresses.contains_key(&listener.address) {
@@ -1326,6 +1454,7 @@ impl ConfigBuilder {
                 ListenerProtocol::Https => self.push_tls_listener(listener.clone())?,
                 ListenerProtocol::Http => self.push_http_listener(listener.clone())?,
                 ListenerProtocol::Tcp => self.push_tcp_listener(listener.clone())?,
+                ListenerProtocol::Udp => self.push_udp_listener(listener.clone())?,
             }
         }
         Ok(())
@@ -1346,6 +1475,11 @@ impl ConfigBuilder {
                             Some(ListenerProtocol::Tcp) => {
                                 return Err(ConfigError::WrongFrontendProtocol(
                                     ListenerProtocol::Tcp,
+                                ));
+                            }
+                            Some(ListenerProtocol::Udp) => {
+                                return Err(ConfigError::WrongFrontendProtocol(
+                                    ListenerProtocol::Udp,
                                 ));
                             }
                             Some(ListenerProtocol::Http) => {
@@ -1413,6 +1547,7 @@ impl ConfigBuilder {
                                 ));
                             }
                             Some(ListenerProtocol::Tcp) => {}
+                            Some(ListenerProtocol::Udp) => {}
                             None => {
                                 // create a default listener for that front
                                 self.push_tcp_listener(ListenerBuilder::new(
@@ -1421,6 +1556,25 @@ impl ConfigBuilder {
                                 ))?;
                                 self.known_addresses
                                     .insert(frontend.address, ListenerProtocol::Tcp);
+                            }
+                        }
+                    }
+                }
+                ClusterConfig::Udp(ref udp) => {
+                    //FIXME: verify that different TCP clusters do not request the same address
+                    for frontend in &udp.frontends {
+                        match self.known_addresses.get(&frontend.address) {
+                            Some(ListenerProtocol::Http) | Some(ListenerProtocol::Https) => {}
+                            Some(ListenerProtocol::Tcp) => {}
+                            Some(ListenerProtocol::Udp) => {}
+                            None => {
+                                // create a default listener for that front
+                                self.push_udp_listener(ListenerBuilder::new(
+                                    frontend.address.into(),
+                                    ListenerProtocol::Udp,
+                                ))?;
+                                self.known_addresses
+                                    .insert(frontend.address, ListenerProtocol::Udp);
                             }
                         }
                     }
@@ -1493,6 +1647,7 @@ pub struct Config {
     pub http_listeners: Vec<HttpListenerConfig>,
     pub https_listeners: Vec<HttpsListenerConfig>,
     pub tcp_listeners: Vec<TcpListenerConfig>,
+    pub udp_listeners: Vec<UdpListenerConfig>,
     pub clusters: HashMap<String, ClusterConfig>,
     pub handle_process_affinity: bool,
     pub ctl_command_timeout: u64,
@@ -1584,6 +1739,14 @@ impl Config {
             v.push(WorkerRequest {
                 id: format!("CONFIG-{count}"),
                 content: RequestType::AddTcpListener(*listener).into(),
+            });
+            count += 1;
+        }
+
+        for listener in &self.udp_listeners {
+            v.push(WorkerRequest {
+                id: format!("CONFIG-{count}"),
+                content: RequestType::AddUdpListener(*listener).into(),
             });
             count += 1;
         }
